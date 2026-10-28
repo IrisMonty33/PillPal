@@ -1,0 +1,206 @@
+### PillPal API walkthrough for the VS Code "REST Client" extension (humao.rest-client).
+### Click "Send Request" above each block, top to bottom. Run `npm run db:seed` first.
+
+@baseUrl = http://localhost:4000/api/v1
+@deviceKey = pp_dev_demo_0000000000000000000000000000000000000000
+@provisioningKey = pillpal-provisioning-dev
+@adminKey = pillpal-admin-dev
+
+### Health check (no auth)
+GET {{baseUrl}}/health
+
+### ------------------------------------------------------------------ APP SIDE
+### Log in as the demo patient
+# @name login
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{ "email": "demo@pillpal.app", "password": "Password123!" }
+
+###
+@token = {{login.response.body.accessToken}}
+
+### Home screen data in one call
+GET {{baseUrl}}/dashboard
+Authorization: Bearer {{token}}
+
+### My medications (with slot + schedules)
+GET {{baseUrl}}/medications
+Authorization: Bearer {{token}}
+
+### Add a medication
+# @name newMed
+POST {{baseUrl}}/medications
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{ "name": "Amlodipine", "strength": "5 mg", "form": "TABLET", "instructions": "Take in the morning", "refillThreshold": 7 }
+
+### My dispensers
+# @name devices
+GET {{baseUrl}}/devices
+Authorization: Bearer {{token}}
+
+###
+@deviceId = {{devices.response.body.devices[0].id}}
+@medicationId = {{newMed.response.body.medication.id}}
+
+### Load the new medication into slot 5 with 30 pills
+PUT {{baseUrl}}/devices/{{deviceId}}/slots/5
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{ "medicationId": "{{medicationId}}", "pillCount": 30 }
+
+### Schedule it every day at 09:00 (user's timezone), 1 pill, missed after 60 min
+POST {{baseUrl}}/schedules
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{ "medicationId": "{{medicationId}}", "timeOfDay": "09:00", "daysOfWeek": [], "quantity": 1, "graceMinutes": 60, "label": "Morning" }
+
+### Today's doses + the next one
+GET {{baseUrl}}/doses/today
+Authorization: Bearer {{token}}
+
+### Adherence for the last 14 days (for charts)
+GET {{baseUrl}}/doses/adherence?days=14
+Authorization: Bearer {{token}}
+
+### Ask the dispenser to dispense 1 pill from slot 1 right now (queued, picked up on next Pi sync)
+POST {{baseUrl}}/devices/{{deviceId}}/commands
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{ "type": "DISPENSE", "slotIndex": 1, "quantity": 1 }
+
+### Make the dispenser buzz for 3 seconds ("find my PillPal")
+POST {{baseUrl}}/devices/{{deviceId}}/commands
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{ "type": "RING", "seconds": 3 }
+
+### Notifications inbox
+GET {{baseUrl}}/notifications?limit=20
+Authorization: Bearer {{token}}
+
+### Notification preferences
+PATCH {{baseUrl}}/notifications/settings
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{ "reminderLeadMinutes": 10, "quietHoursStart": "22:00", "quietHoursEnd": "07:00" }
+
+### Register the phone's Expo push token
+POST {{baseUrl}}/auth/push-tokens
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{ "token": "ExponentPushToken[xxxxxxxxxxxxxxxxxxxxxx]", "platform": "ANDROID" }
+
+### Vitals history
+GET {{baseUrl}}/vitals?type=BLOOD_PRESSURE&limit=10
+Authorization: Bearer {{token}}
+
+### Log a manual blood pressure reading
+POST {{baseUrl}}/vitals
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{ "type": "BLOOD_PRESSURE", "systolic": 124, "diastolic": 81, "pulse": 68 }
+
+### Invite a caregiver
+POST {{baseUrl}}/caregivers/invite
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{ "email": "caregiver@pillpal.app" }
+
+### ------------------------------------------------------------------ PI SIDE
+### First boot: register the Pi (returns the API key ONCE + the claim code to show on screen)
+POST {{baseUrl}}/device/register
+Content-Type: application/json
+X-Provisioning-Key: {{provisioningKey}}
+
+{ "serialNumber": "10000000abcdef12", "firmwareVersion": "0.1.0", "model": "Raspberry Pi 5 4GB" }
+
+### Poll while the claim code is on screen
+GET {{baseUrl}}/device/claim-status
+X-Device-Key: {{deviceKey}}
+
+### Sync (every ~30 s): heartbeat in, slots + schedules + upcoming doses + commands out
+# @name sync
+POST {{baseUrl}}/device/sync
+X-Device-Key: {{deviceKey}}
+Content-Type: application/json
+
+{ "firmwareVersion": "0.1.0", "ipAddress": "192.168.1.42", "slots": [ { "index": 1, "weightGrams": 21.3 } ] }
+
+###
+@doseId = {{sync.response.body.upcomingDoses[0].id}}
+
+### Report a dispensed dose (break beam counted the pills)
+POST {{baseUrl}}/device/doses/{{doseId}}/dispensed
+X-Device-Key: {{deviceKey}}
+Content-Type: application/json
+
+{ "detectedCount": 1, "weightBeforeGrams": 21.3, "weightAfterGrams": 20.7 }
+
+### Report the user confirmed on the touchscreen (only needed when requireTakenConfirmation = true)
+POST {{baseUrl}}/device/doses/{{doseId}}/taken
+X-Device-Key: {{deviceKey}}
+Content-Type: application/json
+
+{ "method": "touchscreen" }
+
+### Report a dispense failure (alerts the user + caregivers)
+POST {{baseUrl}}/device/doses/{{doseId}}/failed
+X-Device-Key: {{deviceKey}}
+Content-Type: application/json
+
+{ "reason": "No pill detected after 3 attempts", "code": "BREAK_BEAM_TIMEOUT" }
+
+### User pressed "dispense now" on the touchscreen for slot 1
+POST {{baseUrl}}/device/doses/manual
+X-Device-Key: {{deviceKey}}
+Content-Type: application/json
+
+{ "slotIndex": 1, "quantity": 1, "detectedCount": 1 }
+
+### Upload a blood pressure reading from the BLE cuff
+POST {{baseUrl}}/device/vitals
+X-Device-Key: {{deviceKey}}
+Content-Type: application/json
+
+{ "type": "BLOOD_PRESSURE", "systolic": 128, "diastolic": 84, "pulse": 72, "meta": { "cuff": "Omron" } }
+
+### Upload sensor readings in bulk
+POST {{baseUrl}}/device/readings
+X-Device-Key: {{deviceKey}}
+Content-Type: application/json
+
+[ { "type": "WEIGHT", "slotIndex": 1, "value": 20.7, "unit": "g" }, { "type": "TEMPERATURE", "value": 24.5, "unit": "C" } ]
+
+### Log lines
+POST {{baseUrl}}/device/events
+X-Device-Key: {{deviceKey}}
+Content-Type: application/json
+
+{ "level": "INFO", "type": "BOOT", "message": "Firmware 0.1.0 started" }
+
+### Complete a command received in sync.pendingCommands
+# POST {{baseUrl}}/device/commands/<commandId>/complete
+# X-Device-Key: {{deviceKey}}
+# Content-Type: application/json
+#
+# { "success": true, "result": { "detectedCount": 1 } }
+
+### ------------------------------------------------------------------ ADMIN
+### Run the scheduler job now (dose generation, reminders, missed doses, offline check)
+POST {{baseUrl}}/system/tick
+X-Admin-Key: {{adminKey}}
+
+### Row counts
+GET {{baseUrl}}/system/stats
+X-Admin-Key: {{adminKey}}

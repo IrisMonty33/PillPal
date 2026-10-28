@@ -1,0 +1,552 @@
+// =====================================================================
+//  PillPal database schema (PostgreSQL via Prisma 7)
+//
+//  Two kinds of clients talk to this database through the API:
+//    * The React Native companion app (users, caregivers)      -> /api/v1/...
+//    * The Raspberry Pi dispenser hub ("device")                -> /api/v1/device/...
+//
+//  Run `npm run db:migrate` after changing this file.
+// =====================================================================
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ----------------------------------------------------------------------
+// Enums
+// ----------------------------------------------------------------------
+
+enum DeviceStatus {
+  UNCLAIMED // registered by the Pi but not yet linked to a user account
+  ONLINE
+  OFFLINE
+}
+
+enum MedicationForm {
+  TABLET
+  CAPSULE
+  SOFTGEL
+  OTHER
+}
+
+/// Lifecycle of a single dose occurrence.
+/// SCHEDULED -> DISPENSED -> TAKEN   (normal path)
+/// SCHEDULED -> TAKEN                (user took it without the device, or requireTakenConfirmation = false)
+/// SCHEDULED/DISPENSED -> MISSED     (window closed, set by the scheduler job)
+/// SCHEDULED -> SKIPPED              (user chose to skip)
+/// SCHEDULED -> FAILED -> DISPENSED  (dispense error, then successful retry)
+enum DoseStatus {
+  SCHEDULED
+  DISPENSED
+  TAKEN
+  MISSED
+  SKIPPED
+  FAILED
+}
+
+enum DoseSource {
+  SCHEDULE // generated from a Schedule by the scheduler job
+  MANUAL   // logged by the user in the app (e.g. took it from the bottle)
+  DEVICE   // on-demand dispense started on the Pi touchscreen
+  REMOTE   // on-demand dispense started from the app (DISPENSE command)
+}
+
+enum CommandType {
+  DISPENSE        // payload: { slotIndex, quantity, doseEventId? }
+  TEST_SLOT       // payload: { slotIndex }
+  TARE_SCALE      // payload: {}
+  CALIBRATE_SCALE // payload: { slotIndex, knownWeightGrams }
+  RING            // payload: { seconds }  -> buzzer/vibration test ("find my dispenser")
+  REBOOT
+  SYNC_NOW
+  UPDATE_SETTINGS // payload: partial Device.settings
+}
+
+enum CommandStatus {
+  PENDING   // waiting for the device to pick it up during sync
+  SENT      // delivered to the device (device acknowledged receipt)
+  COMPLETED
+  FAILED
+  EXPIRED   // device did not pick it up in time
+}
+
+enum NotificationType {
+  DOSE_REMINDER
+  DOSE_MISSED
+  DOSE_TAKEN
+  LOW_STOCK
+  DEVICE_OFFLINE
+  DEVICE_ONLINE
+  DEVICE_ERROR
+  VITALS_ALERT
+  CAREGIVER_INVITE
+  SYSTEM
+}
+
+enum VitalType {
+  BLOOD_PRESSURE // systolic / diastolic / pulse
+  HEART_RATE     // value (bpm)
+  SPO2           // value (%)
+  TEMPERATURE    // value (unit: C or F)
+  WEIGHT         // value (unit: kg or lb)
+  GLUCOSE        // value (unit: mg/dL)
+}
+
+enum VitalSource {
+  DEVICE // read by the Pi (e.g. BLE blood-pressure cuff)
+  MANUAL // typed into the app
+}
+
+enum CaregiverStatus {
+  PENDING
+  ACCEPTED
+  REVOKED
+}
+
+enum InventoryReason {
+  REFILL
+  DISPENSE
+  ADJUSTMENT
+  REMOVED
+}
+
+enum SensorType {
+  WEIGHT      // load cell, grams
+  BREAK_BEAM  // pills counted by the IR break-beam sensor
+  TEMPERATURE
+  HUMIDITY
+  BATTERY
+  OTHER
+}
+
+enum DeviceEventLevel {
+  INFO
+  WARN
+  ERROR
+}
+
+enum PushPlatform {
+  IOS
+  ANDROID
+  WEB
+}
+
+// ----------------------------------------------------------------------
+// Accounts
+// ----------------------------------------------------------------------
+
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  passwordHash String
+  firstName    String
+  lastName     String?
+  phone        String?
+  /// IANA timezone used to interpret schedule times, e.g. "America/New_York".
+  timezone     String   @default("America/New_York")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  settings      NotificationSettings?
+  refreshTokens RefreshToken[]
+  pushTokens    PushToken[]
+  devices       Device[]
+  medications   Medication[]
+  schedules     Schedule[]
+  doseEvents    DoseEvent[]
+  vitals        VitalReading[]
+  notifications Notification[]
+  commands      DeviceCommand[]
+  inventoryEvents InventoryEvent[]
+
+  caregiverLinksAsPatient   CaregiverLink[] @relation("PatientLinks")
+  caregiverLinksAsCaregiver CaregiverLink[] @relation("CaregiverLinks")
+
+  @@map("users")
+}
+
+model NotificationSettings {
+  userId String @id
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  doseReminders       Boolean @default(true)
+  missedDoseAlerts    Boolean @default(true)
+  lowStockAlerts      Boolean @default(true)
+  deviceOfflineAlerts Boolean @default(true)
+  vitalsAlerts        Boolean @default(true)
+
+  /// Minutes before the scheduled time to send the reminder push (0 = at the scheduled time).
+  reminderLeadMinutes Int @default(0)
+  /// If true a DISPENSED dose must be confirmed (tray sensor / touchscreen / app) before it counts as TAKEN.
+  requireTakenConfirmation Boolean @default(false)
+
+  /// Quiet hours in "HH:MM" local time; reminder pushes are suppressed inside the window. Null = disabled.
+  quietHoursStart String?
+  quietHoursEnd   String?
+
+  updatedAt DateTime @updatedAt
+
+  @@map("notification_settings")
+}
+
+model RefreshToken {
+  id        String    @id @default(uuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String    @unique
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+  @@map("refresh_tokens")
+}
+
+model PushToken {
+  id         String       @id @default(uuid())
+  userId     String
+  user       User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// Expo push token, e.g. "ExponentPushToken[xxxxxxxx]".
+  token      String       @unique
+  platform   PushPlatform @default(ANDROID)
+  createdAt  DateTime     @default(now())
+  lastUsedAt DateTime?
+
+  @@index([userId])
+  @@map("push_tokens")
+}
+
+/// A caregiver (family member, nurse) who can see a patient's adherence and receives alerts.
+model CaregiverLink {
+  id          String          @id @default(uuid())
+  patientId   String
+  patient     User            @relation("PatientLinks", fields: [patientId], references: [id], onDelete: Cascade)
+  /// Null until the invited person has an account and accepts.
+  caregiverId String?
+  caregiver   User?           @relation("CaregiverLinks", fields: [caregiverId], references: [id], onDelete: Cascade)
+  inviteEmail String
+  status      CaregiverStatus @default(PENDING)
+
+  notifyMissedDoses Boolean @default(true)
+  notifyLowStock    Boolean @default(true)
+  notifyDeviceIssues Boolean @default(true)
+  notifyVitals      Boolean @default(true)
+
+  createdAt  DateTime  @default(now())
+  acceptedAt DateTime?
+
+  @@unique([patientId, inviteEmail])
+  @@index([caregiverId])
+  @@map("caregiver_links")
+}
+
+// ----------------------------------------------------------------------
+// Device (Raspberry Pi hub)
+// ----------------------------------------------------------------------
+
+model Device {
+  id           String       @id @default(uuid())
+  /// Hardware identifier sent by the Pi (e.g. CPU serial from /proc/cpuinfo).
+  serialNumber String       @unique
+  name         String       @default("PillPal")
+  /// SHA-256 of the device API key. The plain key is only returned once, at registration.
+  apiKeyHash   String       @unique
+  /// 6-character code shown on the touchscreen; the user types it in the app to claim the device.
+  claimCode          String?   @unique
+  claimCodeExpiresAt DateTime?
+
+  ownerId String?
+  owner   User?   @relation(fields: [ownerId], references: [id], onDelete: SetNull)
+
+  status          DeviceStatus @default(UNCLAIMED)
+  firmwareVersion String?
+  model           String?
+  ipAddress       String?
+  lastSeenAt      DateTime?
+  offlineNotifiedAt DateTime?
+  /// Free-form device settings: { "volume": 80, "brightness": 70, "reminderRepeatMinutes": 5, ... }
+  settings Json @default("{}")
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  claimedAt DateTime?
+
+  slots          Slot[]
+  commands       DeviceCommand[]
+  events         DeviceEvent[]
+  sensorReadings SensorReading[]
+  doseEvents     DoseEvent[]
+  vitals         VitalReading[]
+
+  @@index([ownerId])
+  @@map("devices")
+}
+
+/// One physical hopper / iris valve. The hardware has 5 (one FS90R servo + one IR break-beam each).
+model Slot {
+  id       String @id @default(uuid())
+  deviceId String
+  device   Device @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  /// 1..5
+  index    Int
+
+  medicationId String?     @unique
+  medication   Medication? @relation(fields: [medicationId], references: [id], onDelete: SetNull)
+
+  /// Pills currently loaded (server-side estimate: refills minus dispenses, corrected by the device).
+  pillCount       Int    @default(0)
+  capacity        Int    @default(50)
+  lastWeightGrams Float?
+  lastDispensedAt DateTime?
+  lowStockNotifiedAt DateTime?
+  /// Per-slot hardware calibration, e.g. { "servoMsPerPill": 180, "tareOffset": 0.0 }
+  calibration Json @default("{}")
+
+  updatedAt DateTime @updatedAt
+
+  doseEvents      DoseEvent[]
+  sensorReadings  SensorReading[]
+  inventoryEvents InventoryEvent[]
+
+  @@unique([deviceId, index])
+  @@map("slots")
+}
+
+/// Commands queued from the app for the device; delivered on the next sync.
+model DeviceCommand {
+  id        String        @id @default(uuid())
+  deviceId  String
+  device    Device        @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  type      CommandType
+  payload   Json          @default("{}")
+  status    CommandStatus @default(PENDING)
+  result    Json?
+  error     String?
+
+  createdById String?
+  createdBy   User?   @relation(fields: [createdById], references: [id], onDelete: SetNull)
+
+  createdAt   DateTime  @default(now())
+  expiresAt   DateTime
+  sentAt      DateTime?
+  completedAt DateTime?
+
+  @@index([deviceId, status])
+  @@map("device_commands")
+}
+
+/// Log lines from the device (boot, jam detected, dispense started, ...).
+model DeviceEvent {
+  id         String           @id @default(uuid())
+  deviceId   String
+  device     Device           @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  level      DeviceEventLevel @default(INFO)
+  type       String
+  message    String?
+  data       Json?
+  occurredAt DateTime         @default(now())
+  createdAt  DateTime         @default(now())
+
+  @@index([deviceId, occurredAt])
+  @@map("device_events")
+}
+
+/// Numeric time-series from the device (load cell weight, break-beam counts, ...).
+model SensorReading {
+  id         String     @id @default(uuid())
+  deviceId   String
+  device     Device     @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  slotId     String?
+  slot       Slot?      @relation(fields: [slotId], references: [id], onDelete: SetNull)
+  type       SensorType
+  value      Float
+  unit       String?
+  meta       Json?
+  recordedAt DateTime   @default(now())
+
+  @@index([deviceId, type, recordedAt])
+  @@map("sensor_readings")
+}
+
+// ----------------------------------------------------------------------
+// Medications & scheduling
+// ----------------------------------------------------------------------
+
+model Medication {
+  id     String @id @default(uuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  name         String
+  /// e.g. "500 mg"
+  strength     String?
+  form         MedicationForm @default(TABLET)
+  color        String?
+  shape        String?
+  instructions String?
+  notes        String?
+  prescriber   String?
+  pharmacy     String?
+  rxNumber     String?
+  /// Average weight of one pill in milligrams (used with the load cell to verify counts).
+  pillWeightMg Float?
+  /// LOW_STOCK alert fires when the slot's pillCount drops to this number.
+  refillThreshold Int @default(7)
+
+  isActive  Boolean   @default(true)
+  startDate DateTime?
+  endDate   DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  slot            Slot?
+  schedules       Schedule[]
+  doseEvents      DoseEvent[]
+  inventoryEvents InventoryEvent[]
+
+  @@index([userId, isActive])
+  @@map("medications")
+}
+
+/// "Take 1 pill of X at 08:00 on Mon/Wed/Fri". Times are in the user's timezone.
+model Schedule {
+  id           String     @id @default(uuid())
+  userId       String
+  user         User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  medicationId String
+  medication   Medication @relation(fields: [medicationId], references: [id], onDelete: Cascade)
+
+  label      String?
+  /// "HH:MM" 24-hour local time.
+  timeOfDay  String
+  /// 0 = Sunday ... 6 = Saturday. Empty array = every day.
+  daysOfWeek Int[]    @default([])
+  quantity   Int      @default(1)
+  /// Minutes after timeOfDay before the dose counts as MISSED.
+  graceMinutes Int    @default(60)
+  startDate  DateTime?
+  endDate    DateTime?
+  isActive   Boolean  @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  doseEvents DoseEvent[]
+
+  @@index([userId, isActive])
+  @@map("schedules")
+}
+
+/// One concrete dose occurrence (generated from schedules, or logged manually).
+model DoseEvent {
+  id           String     @id @default(uuid())
+  userId       String
+  user         User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  medicationId String
+  medication   Medication @relation(fields: [medicationId], references: [id], onDelete: Cascade)
+  scheduleId   String?
+  schedule     Schedule?  @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+  deviceId     String?
+  device       Device?    @relation(fields: [deviceId], references: [id], onDelete: SetNull)
+  slotId       String?
+  slot         Slot?      @relation(fields: [slotId], references: [id], onDelete: SetNull)
+
+  scheduledAt  DateTime
+  windowEndsAt DateTime
+  quantity     Int        @default(1)
+  status       DoseStatus @default(SCHEDULED)
+  source       DoseSource @default(SCHEDULE)
+
+  dispensedAt      DateTime?
+  takenAt          DateTime?
+  skippedAt        DateTime?
+  /// Pills detected by the break-beam sensor while dispensing.
+  detectedCount    Int?
+  weightBeforeGrams Float?
+  weightAfterGrams  Float?
+  failureReason    String?
+  notes            String?
+
+  reminderSentAt    DateTime?
+  missedAlertSentAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([scheduleId, scheduledAt])
+  @@index([userId, scheduledAt])
+  @@index([deviceId, status, scheduledAt])
+  @@map("dose_events")
+}
+
+/// Audit trail for slot pill counts.
+model InventoryEvent {
+  id           String          @id @default(uuid())
+  slotId       String
+  slot         Slot            @relation(fields: [slotId], references: [id], onDelete: Cascade)
+  medicationId String?
+  medication   Medication?     @relation(fields: [medicationId], references: [id], onDelete: SetNull)
+  userId       String?
+  user         User?           @relation(fields: [userId], references: [id], onDelete: SetNull)
+  reason       InventoryReason
+  delta        Int
+  countAfter   Int
+  createdAt    DateTime        @default(now())
+
+  @@index([slotId, createdAt])
+  @@map("inventory_events")
+}
+
+// ----------------------------------------------------------------------
+// Vitals & notifications
+// ----------------------------------------------------------------------
+
+model VitalReading {
+  id       String      @id @default(uuid())
+  userId   String
+  user     User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  deviceId String?
+  device   Device?     @relation(fields: [deviceId], references: [id], onDelete: SetNull)
+  type     VitalType
+  source   VitalSource @default(MANUAL)
+
+  systolic  Int?
+  diastolic Int?
+  pulse     Int?
+  value     Float?
+  unit      String?
+  /// True when the reading is outside the alert thresholds (a VITALS_ALERT was sent).
+  flagged   Boolean  @default(false)
+  meta      Json?
+  recordedAt DateTime @default(now())
+  createdAt  DateTime @default(now())
+
+  @@index([userId, type, recordedAt])
+  @@map("vital_readings")
+}
+
+model Notification {
+  id     String           @id @default(uuid())
+  userId String
+  user   User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type   NotificationType
+  title  String
+  body   String
+  /// Extra context for the app, e.g. { "doseEventId": "...", "deviceId": "..." }
+  data   Json?
+
+  readAt     DateTime?
+  pushSentAt DateTime?
+  pushError  String?
+  createdAt  DateTime  @default(now())
+
+  @@index([userId, createdAt])
+  @@index([userId, readAt])
+  @@map("notifications")
+}

@@ -1,0 +1,20 @@
+{
+  "expo": {
+    "name": "PillPal",
+    "slug": "pillpal",
+    "scheme": "pillpal",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "ios": {
+      "supportsTablet": true
+    },
+    "android": {
+      "package": "com.pillpal.mobile"
+    },
+    "plugins": [
+      "expo-notifications",
+      "expo-status-bar"
+    ]
+  }
+}

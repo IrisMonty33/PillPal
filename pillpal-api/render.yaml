@@ -1,0 +1,23 @@
+# Render "Blueprint" – deploys the API with one click (https://render.com/docs/blueprint-spec).
+# Create the PostgreSQL database separately (Neon free tier works great) and paste its URL when prompted.
+services:
+  - type: web
+    name: pillpal-api
+    runtime: node
+    plan: free
+    buildCommand: npm install && npm run build && npx prisma migrate deploy
+    startCommand: npm start
+    healthCheckPath: /api/v1/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        sync: false # paste your Neon / Render Postgres connection string
+      - key: JWT_SECRET
+        generateValue: true
+      - key: DEVICE_PROVISIONING_KEY
+        generateValue: true
+      - key: ADMIN_API_KEY
+        generateValue: true
+      - key: CORS_ORIGINS
+        value: "*"

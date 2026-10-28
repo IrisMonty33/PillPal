@@ -1,0 +1,12 @@
+{
+  "editor.formatOnSave": true,
+  "editor.defaultFormatter": "esbenp.prettier-vscode",
+  "[prisma]": { "editor.defaultFormatter": "Prisma.prisma" },
+  "typescript.tsdk": "node_modules/typescript/lib",
+  "typescript.preferences.importModuleSpecifier": "relative",
+  "files.exclude": { "dist": true, "src/generated": true },
+  "search.exclude": { "dist": true, "src/generated": true, "node_modules": true },
+  "rest-client.environmentVariables": {
+    "$shared": { "baseUrl": "http://localhost:4000/api/v1" }
+  }
+}

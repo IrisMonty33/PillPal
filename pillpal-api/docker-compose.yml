@@ -1,0 +1,23 @@
+# Local PostgreSQL for development.   npm run db:up   /   npm run db:down
+# Data is kept in a named volume, so it survives restarts.
+services:
+  db:
+    image: postgres:16
+    container_name: pillpal-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: pillpal
+      POSTGRES_PASSWORD: pillpal
+      POSTGRES_DB: pillpal
+    ports:
+      - "5432:5432"
+    volumes:
+      - pillpal-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pillpal -d pillpal"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  pillpal-db-data:
