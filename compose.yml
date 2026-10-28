@@ -1,0 +1,26 @@
+services:
+  api:
+    build: .
+    ports:
+      - "4000:4000"
+    enviroment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://pillpal:pillpal@postgres:5432/pillpal
+      JWT_SECRET: ${JWT_SECRET}
+      DEVICE_PROVISIONING_KEY: ${DEVICE_PROVISIONING_KEY}
+      ADMIN_API_KEY: ${ADMIN_API_KEY}
+      EXPO_ACCESS_TOKEN: ${EXPO_ACCESS_TOKEN}
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    enviroment:
+      POSTGRES_USER: pillpal
+      POSTGRES_PASSWORD: pillpal
+      POSTGRES_DB: pillpal
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
