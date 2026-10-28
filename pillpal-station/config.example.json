@@ -1,0 +1,15 @@
+{
+  "api_url": "http://192.168.1.20:4000/api/v1",
+  "provisioning_key": "pillpal-provisioning-dev",
+
+  "hardware": "simulator",
+  "serial_port": "/dev/ttyACM0",
+  "serial_baud": 115200,
+
+  "local_port": 8080,
+  "sync_seconds": 30,
+  "auto_dispense": false,
+  "alert_repeat_minutes": 5,
+  "dispense_timeout_seconds": 8,
+  "firmware_version": "0.2.0"
+}

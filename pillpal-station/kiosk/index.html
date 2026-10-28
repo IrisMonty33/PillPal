@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=1280, height=720, initial-scale=1, user-scalable=no" />
+  <title>PillPal</title>
+  <link rel="icon" href="data:," />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">PillPal</span>
+      <span class="device" id="device-name"></span>
+    </div>
+    <div class="status" id="status"></div>
+    <div class="clock">
+      <span id="clock-time">--:--</span>
+      <span id="clock-date"></span>
+    </div>
+  </header>
+
+  <div class="banner" id="banner" hidden></div>
+
+  <main class="home" id="home">
+    <section class="left">
+      <div class="card next" id="next"></div>
+      <div class="card today">
+        <h2>Today</h2>
+        <ul class="timeline" id="today"></ul>
+      </div>
+    </section>
+    <section class="right card">
+      <h2>Pill levels <small>tap a slot to dispense one now</small></h2>
+      <div class="slots" id="slots"></div>
+    </section>
+  </main>
+
+  <!-- full-screen states -->
+  <div class="screen pairing" id="pairing" hidden></div>
+  <div class="screen alert" id="alert" hidden></div>
+
+  <!-- dialogs -->
+  <div class="modal-backdrop" id="modal" hidden></div>
+  <div class="busy" id="busy" hidden><div class="spinner"></div><span id="busy-text"></span></div>
+  <div class="toast" id="toast" hidden></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
